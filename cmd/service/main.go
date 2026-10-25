@@ -12,12 +12,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/nikolaykonkin/review-analyzer/internal/config"
 	"github.com/nikolaykonkin/review-analyzer/internal/httpapi"
 	"github.com/nikolaykonkin/review-analyzer/internal/logger"
+	"github.com/nikolaykonkin/review-analyzer/internal/migrate"
+	"github.com/nikolaykonkin/review-analyzer/migrations"
 )
 
 const (
+	startupTimeout    = 30 * time.Second
 	readHeaderTimeout = 5 * time.Second
 	shutdownTimeout   = 10 * time.Second
 )
@@ -39,6 +44,31 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// Подключение и миграции ограничены общим таймаутом запуска
+	startCtx, cancelStart := context.WithTimeout(ctx, startupTimeout)
+	defer cancelStart()
+
+	pool, err := pgxpool.New(startCtx, cfg.DatabaseURL)
+	if err != nil {
+		return fmt.Errorf("создание пула подключений: %w", err)
+	}
+	// Пул закрывается при выходе из run, то есть уже после остановки HTTP-сервера
+	defer pool.Close()
+
+	if err := pool.Ping(startCtx); err != nil {
+		return fmt.Errorf("проверка подключения к базе данных: %w", err)
+	}
+
+	ms, err := migrate.Load(migrations.FS)
+	if err != nil {
+		return fmt.Errorf("загрузка миграций: %w", err)
+	}
+	applied, err := migrate.Up(startCtx, pool, ms)
+	if err != nil {
+		return fmt.Errorf("применение миграций: %w", err)
+	}
+	log.Info("миграции применены", slog.Int("applied", applied), slog.Int("total", len(ms)))
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),

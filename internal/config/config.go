@@ -10,28 +10,40 @@ import (
 )
 
 const (
-	envHTTPPort = "HTTP_PORT"
-	envLogLevel = "LOG_LEVEL"
+	envDatabaseURL = "DATABASE_URL"
+	envHTTPPort    = "HTTP_PORT"
+	envLogLevel    = "LOG_LEVEL"
 
 	defaultHTTPPort = "8080"
 	defaultLogLevel = "info"
 )
 
-// ErrInvalidValue означает, что значение переменной окружения недопустимо
-var ErrInvalidValue = errors.New("недопустимое значение")
+var (
+	// ErrInvalidValue означает, что значение переменной окружения недопустимо
+	ErrInvalidValue = errors.New("недопустимое значение")
+	// ErrMissingValue означает, что обязательная переменная не задана
+	ErrMissingValue = errors.New("обязательная переменная не задана")
+)
 
 // Config - конфигурация сервиса
 type Config struct {
-	HTTPPort int
-	LogLevel slog.Level
+	DatabaseURL string
+	HTTPPort    int
+	LogLevel    slog.Level
 }
 
 // Load читает конфигурацию через getenv (в приложении это os.Getenv)
-// Пустая переменная считается незаданной и заменяется значением по умолчанию
+// Пустая переменная считается незаданной: для необязательных подставляется значение по умолчанию
 // Все найденные ошибки возвращаются разом через errors.Join, чтобы исправить окружение за один запуск
-// Значения переменных этого пакета не засекречены, поэтому попадают в текст ошибки
+// Значения HTTP_PORT и LOG_LEVEL не засекречены и попадают в текст ошибки;
+// DATABASE_URL содержит пароль, поэтому его значение в ошибки не попадает никогда
 func Load(getenv func(string) string) (Config, error) {
 	var errs []error
+
+	databaseURL := getenv(envDatabaseURL)
+	if databaseURL == "" {
+		errs = append(errs, fmt.Errorf("%s: %w", envDatabaseURL, ErrMissingValue))
+	}
 
 	port, err := parsePort(valueOrDefault(getenv(envHTTPPort), defaultHTTPPort))
 	if err != nil {
@@ -46,7 +58,7 @@ func Load(getenv func(string) string) (Config, error) {
 	if joined := errors.Join(errs...); joined != nil {
 		return Config{}, joined
 	}
-	return Config{HTTPPort: port, LogLevel: level}, nil
+	return Config{DatabaseURL: databaseURL, HTTPPort: port, LogLevel: level}, nil
 }
 
 func valueOrDefault(value, def string) string {
