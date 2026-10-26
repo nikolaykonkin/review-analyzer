@@ -2,9 +2,9 @@
 
 [![CI](https://github.com/nikolaykonkin/review-analyzer/actions/workflows/ci.yml/badge.svg)](https://github.com/nikolaykonkin/review-analyzer/actions/workflows/ci.yml)
 
-Сервис анализа отзывов на косметику и уход с Telegram-интерфейсом. Учебный портфолио-проект.
+Сервис анализа отзывов на косметику и уход с Telegram-интерфейсом.
 
-Статус: в разработке. Реализованы загрузка конфигурации, логирование, подключение к PostgreSQL с автоматическими миграциями, каркас HTTP-сервиса с проверкой `/healthz`, корректная остановка и запуск в Docker Compose. Остальное перечислено в разделе «Что не реализовано и почему».
+Статус: в разработке. Реализованы загрузка конфигурации, логирование, подключение к PostgreSQL с автоматическими миграциями, слой хранения отзывов, каркас HTTP-сервиса с проверкой `/healthz`, корректная остановка и запуск в Docker Compose. Остальное перечислено в разделе «Что не реализовано и почему».
 
 ## Что демонстрирует проект
 
@@ -58,7 +58,7 @@ go run ./cmd/service
 
 ## Схема
 
-Таблица `reviews` (`migrations/001_create_reviews.sql`):
+Таблица `reviews` (`migrations/001_create_reviews.sql`, `migrations/002_add_review_source_key.sql`):
 
 | Поле | Тип | Назначение |
 |---|---|---|
@@ -74,6 +74,7 @@ go run ./cmd/service
 | `priority` | `TEXT` | `high`, `normal` |
 | `summary` | `TEXT` | краткое содержание |
 | `created_at` | `TIMESTAMPTZ`, по умолчанию `now()` | время создания записи |
+| `source_key` | `TEXT`, `UNIQUE` | ключ дедупликации исходного отзыва (допускает `NULL`) |
 
 Ограничение `reviews_done_has_result`: отзыв со статусом `done` обязан иметь `sentiment`, `priority` и `summary`.
 
@@ -106,6 +107,12 @@ SQL-файлы из `migrations/` встраиваются в бинарник (
 - `pg_advisory_xact_lock` не дает нескольким экземплярам сервиса мигрировать одновременно.
 
 Сервис применяет миграции при старте, до запуска HTTP-сервера (`cmd/service/main.go`). Соглашение проекта: примененные миграции не редактируются, изменения схемы вносятся новым файлом.
+
+Доступ к отзывам реализован в `internal/storage/storage.go` типом `Repository`:
+
+- `InsertReview` вставляет отзыв запросом `INSERT ... ON CONFLICT (source_key) DO NOTHING RETURNING id`; повторная вставка с тем же `SourceKey` не создает дубликата и не возвращает ошибку;
+- `GetReview` читает отзыв по `id`, а при отсутствии возвращает `ErrNotFound`;
+- ошибки вставки не содержат текст отзыва (это проверяет `TestInsertReview_ErrorHasNoReviewText` в `internal/storage/storage_test.go`).
 
 ### Корректная остановка
 
@@ -143,15 +150,15 @@ SQL-файлы из `migrations/` встраиваются в бинарник (
 
 Запуск: `go test ./...`. Есть unit-тесты загрузки конфигурации (`internal/config/config_test.go`), логгера (`internal/logger/logger_test.go`), маршрута `/healthz` (`internal/httpapi/router_test.go`) и загрузки миграций (`internal/migrate/migrate_test.go`).
 
-Интеграционные тесты миграций и схемы (`internal/migrate/migrate_test.go`) работают с реальным PostgreSQL и пропускаются, если не задана `TEST_DATABASE_URL`. Запуск с базой из Docker Compose:
+Интеграционные тесты миграций, схемы и хранилища (`internal/migrate/migrate_test.go`, `internal/storage/storage_test.go`) работают с реальным PostgreSQL и пропускаются, если не задана `TEST_DATABASE_URL`. Запуск с базой из Docker Compose:
 
 ```
 docker compose up -d postgres
 set -a; source .env; set +a
-go test -v ./internal/migrate
+go test -v ./internal/migrate ./internal/storage
 ```
 
-Каждый такой тест создает временную схему и удаляет ее по завершении.
+Каждый такой тест создает временную схему и удаляет ее по завершении (общий помощник: `internal/testutil/postgres.go`).
 
 ## Мониторинг
 
@@ -169,12 +176,14 @@ Workflow `.github/workflows/ci.yml` запускается при push в `main`
 - `internal/logger/` — конструктор JSON-логгера
 - `internal/httpapi/` — HTTP-маршруты сервиса
 - `internal/migrate/` — раннер SQL-миграций
+- `internal/storage/` — репозиторий отзывов
+- `internal/testutil/` — помощники для интеграционных тестов
 - `migrations/` — SQL-миграции и пакет `embed`
 - `Dockerfile`, `.dockerignore`, `docker-compose.yml` — сборка и запуск в Docker
 - `.github/workflows/ci.yml` — проверки в GitHub Actions
 - `.env.example` — шаблон переменных окружения
 - `.gitattributes` — атрибуты путей для git
-- `.gitignore` — исключения git
+- `.gitignore` — исключения git (в том числе каталога данных `data/`)
 - `go.mod`, `go.sum` — модуль `github.com/nikolaykonkin/review-analyzer` и зависимости
 
 ## Что не реализовано и почему
