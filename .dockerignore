@@ -3,6 +3,7 @@
 .env
 .env.*
 bin
+data
 *.md
 Dockerfile
 docker-compose.yml
