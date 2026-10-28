@@ -1,0 +1,12 @@
+,author_id,rating,is_recommended,helpfulness,total_feedback_count,total_neg_feedback_count,total_pos_feedback_count,submission_time,review_text,review_title,skin_tone,eye_color,skin_type,hair_color,product_id,product_name,brand_name,price_usd
+0,9000000001,5,1.0,1.0,3,0,3,2023-01-10,"Lovely gentle cleanser. My skin feels soft and not tight after washing, and the light scent fades quickly.",Gentle and effective,light,brown,dry,brown,X100001,Calm Water Cleanser,Northfield Labs,22.0
+1,9000000002,1,0.0,0.0,2,2,0,2023-01-12,"Caused a red rash on my cheeks after two days. I stopped using it right away and my skin took a week to calm down.",Rash after two uses,fair,blue,sensitive,blonde,X100001,Calm Water Cleanser,Northfield Labs,22.0
+2,9000000003,4,1.0,,0,0,0,2023-01-15,"Good moisturizer for the price, although the jar is smaller than I expected.",Good value,medium,hazel,combination,black,X100002,Daily Barrier Cream,Verdana Skin,28.0
+3,9000000004,2,0.0,0.5,2,1,1,2023-02-03,"The pump broke after one week and I could not get the last third of the product out. The formula itself is fine.",Pump broke,,,oily,,X100002,Daily Barrier Cream,Verdana Skin,28.0
+4,9000000005,5,1.0,1.0,1,0,1,2023-02-07,"Best sunscreen I have tried. No white cast, no greasy feeling, and it works well under makeup.",No white cast,deep,brown,oily,black,X100003,Sheer Shield SPF 40,Lumen Care,30.0
+5,9000000006,3,1.0,,0,0,0,2023-02-20,"It is okay. Hydrating, but the scent is stronger than the description suggests, so I will not repurchase.",Okay but too perfumed,tan,green,normal,brown,X100003,Sheer Shield SPF 40,Lumen Care,30.0
+6,9000000007,1,0.0,0.0,1,1,0,2023-03-01,"Not as described: the listing says fragrance free but it smells strongly of lavender. Returned it.",Not fragrance free,light,gray,sensitive,gray,X100004,Quiet Serum,Verdana Skin,45.0
+7,9000000008,5,1.0,1.0,4,0,4,2023-03-05,"After a month my dark spots look clearly lighter.
+The texture is lightweight and absorbs fast.",Visible results,medium,brown,combination,brown,X100004,Quiet Serum,Verdana Skin,45.0
+8,9000000009,4,1.0,,0,0,0,2023-03-09,"Nice mask, but ""overnight"" is optimistic: I still wake up with a slightly sticky pillow, which is the only downside.",Sticky pillow,,,dry,,X100005,Night Repair Mask,Northfield Labs,38.0
+9,9000000010,5,1.0,,0,0,0,2023-03-11,Love it!,Love it,fair,blue,dry,red,X100006,Soft Lip Balm,,12.0
