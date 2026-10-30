@@ -4,7 +4,7 @@
 
 Сервис анализа отзывов на косметику и уход с Telegram-интерфейсом.
 
-Статус: в разработке. Реализованы загрузка конфигурации, логирование, подключение к PostgreSQL с автоматическими миграциями, слой хранения отзывов, каркас HTTP-сервиса с проверкой `/healthz`, корректная остановка и запуск в Docker Compose. Остальное перечислено в разделе «Что не реализовано и почему».
+Статус: в разработке. Реализованы загрузка конфигурации, логирование, подключение к PostgreSQL с автоматическими миграциями, слой хранения отзывов, импорт отзывов из CSV, каркас HTTP-сервиса с проверкой `/healthz`, корректная остановка и запуск в Docker Compose. Остальное перечислено в разделе «Что не реализовано и почему».
 
 ## Что демонстрирует проект
 
@@ -30,7 +30,7 @@
    cp .env.example .env
    ```
 
-2. Запустите PostgreSQL и сервис:
+2. Запустите PostgreSQL и сервис (сервис при старте создает таблицы):
 
    ```
    docker compose up -d --build
@@ -42,7 +42,14 @@
    curl -i localhost:8080/healthz
    ```
 
-4. Остановка: `docker compose down`. Данные хранятся в томе `postgres_data`; `docker compose down -v` удаляет и их.
+4. Загрузите демонстрационные отзывы:
+
+   ```
+   set -a; source .env; set +a
+   go run ./cmd/import testdata/sample_reviews.csv
+   ```
+
+5. Остановка: `docker compose down`. Данные хранятся в томе `postgres_data`; `docker compose down -v` удаляет и их.
 
 Запуск сервиса без Docker (в контейнере только PostgreSQL):
 
@@ -55,6 +62,21 @@ go run ./cmd/service
 ## Примеры вызовов
 
 (раздел в разработке)
+
+## Данные
+
+Для демонстрации используется датасет [DATASET_TITLE](DATASET_URL) (автор Nady Inky, Kaggle), собранный в марте 2023 года с сайта Sephora. Датасет распространяется по лицензии [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+
+Изменения относительно оригинала:
+
+- из файлов `reviews_*.csv` берется случайная выборка (по умолчанию 1000 отзывов);
+- используются поля `product_name`, `brand_name`, `review_text`, `rating` и `submission_time`; для ключа дедупликации дополнительно читаются `author_id` и `product_id`, но в базу не сохраняются; остальные поля (в том числе данные о внешности авторов) не импортируются;
+- записи с пустым текстом, неверным рейтингом или датой пропускаются;
+- текст отзыва хранится без изменений, у названий продукта и бренда обрезаются пробелы по краям.
+
+Данные в репозиторий не входят: каталог `data/` указан в `.gitignore`. Чтобы загрузить настоящий датасет, скачайте его по ссылке выше (нужна учетная запись Kaggle) и положите файлы `reviews_*.csv` в `data/`.
+
+Файл `testdata/sample_reviews.csv` содержит вымышленные отзывы в формате датасета, он не является частью датасета Sephora и используется в тестах и для демонстрации.
 
 ## Схема
 
@@ -124,7 +146,18 @@ SQL-файлы из `migrations/` встраиваются в бинарник (
 
 ### Импорт отзывов
 
-(раздел в разработке)
+Команда `cmd/import` (`cmd/import/main.go`) загружает случайную выборку отзывов из одного или нескольких CSV-файлов в таблицу `reviews`:
+
+```
+go run ./cmd/import [-sample N] [-seed S] файл.csv [файл.csv ...]
+```
+
+- `-sample` (по умолчанию 1000) задает размер выборки, `-seed` (по умолчанию 1) задает seed генератора.
+- Файл читается потоком (`internal/importer/parser.go`), колонки ищутся по имени в заголовке. Обязательны `author_id`, `rating`, `submission_time`, `review_text`, `product_id`, `product_name` и `brand_name`.
+- Запись пропускается, если нарушен формат CSV, пусто название продукта или текст, рейтинг не целое число от 1 до 5 (допустима запись вида `5.0`), дата не в формате `ГГГГ-ММ-ДД`, в тексте невалидный UTF-8 или нулевой байт. Число пропущенных записей по причинам выводится в лог для каждого файла.
+- Выборка равномерная по всем переданным файлам (`internal/importer/sampler.go`, алгоритм reservoir sampling): память зависит только от размера выборки. При тех же файлах (в том же порядке) и seed выборка одинакова.
+- Повторный запуск безопасен: ключ `source_key` это SHA-256 от `author_id`, `product_id`, `submission_time` и `review_text` (функция `sourceKey` в `parser.go`), а вставка идет с `ON CONFLICT DO NOTHING`. Итог (`inserted` и `duplicates`) выводится в лог.
+- Таблицы создает сервис при старте, поэтому перед импортом его нужно хотя бы раз запустить. Тексты отзывов в логи не пишутся.
 
 ### Анализатор и промпт
 
@@ -144,18 +177,18 @@ SQL-файлы из `migrations/` встраиваются в бинарник (
 
 ## Docker
 
-`Dockerfile` собирает статические бинарники (`CGO_ENABLED=0`) и содержит два итоговых образа: `service` и `bot`, выбор через `target`. Образы работают от непривилегированного пользователя `app`; у `service` есть `HEALTHCHECK` по `/healthz`. `docker-compose.yml` запускает PostgreSQL 17 с проверкой готовности и сервис, который стартует после готовности базы. Порты привязаны к `127.0.0.1`; порты на хосте задаются `POSTGRES_HOST_PORT` и `SERVICE_HOST_PORT`. Образ `bot` собирается, но бот пока не реализован и в compose не входит.
+`Dockerfile` собирает статические бинарники (`CGO_ENABLED=0`) и содержит два итоговых образа: `service` и `bot`, выбор через `target`. Образы работают от непривилегированного пользователя `app`; у `service` есть `HEALTHCHECK` по `/healthz`. `docker-compose.yml` запускает PostgreSQL 17 с проверкой готовности и сервис, который стартует после готовности базы. Порты привязаны к `127.0.0.1`; порты на хосте задаются `POSTGRES_HOST_PORT` и `SERVICE_HOST_PORT`. Каталог `data/` исключен из контекста сборки (`.dockerignore`). Образ `bot` собирается, но бот пока не реализован и в compose не входит. Команда импорта в образы не включена.
 
 ## Тесты
 
-Запуск: `go test ./...`. Есть unit-тесты загрузки конфигурации (`internal/config/config_test.go`), логгера (`internal/logger/logger_test.go`), маршрута `/healthz` (`internal/httpapi/router_test.go`) и загрузки миграций (`internal/migrate/migrate_test.go`).
+Запуск: `go test ./...`. Есть unit-тесты загрузки конфигурации (`internal/config/config_test.go`), логгера (`internal/logger/logger_test.go`), маршрута `/healthz` (`internal/httpapi/router_test.go`), загрузки миграций (`internal/migrate/migrate_test.go`) и импорта: разбор и валидация CSV (`internal/importer/parser_test.go`), выборка (`internal/importer/sampler_test.go`), загрузка с подменой хранилища (`internal/importer/importer_test.go`).
 
-Интеграционные тесты миграций, схемы и хранилища (`internal/migrate/migrate_test.go`, `internal/storage/storage_test.go`) работают с реальным PostgreSQL и пропускаются, если не задана `TEST_DATABASE_URL`. Запуск с базой из Docker Compose:
+Интеграционные тесты миграций, схемы, хранилища и идемпотентности импорта (`internal/migrate/migrate_test.go`, `internal/storage/storage_test.go`, `TestInsert_IsIdempotentWithRealStorage` в `internal/importer/importer_test.go`) работают с реальным PostgreSQL и пропускаются, если не задана `TEST_DATABASE_URL`. Запуск с базой из Docker Compose:
 
 ```
 docker compose up -d postgres
 set -a; source .env; set +a
-go test -v ./internal/migrate ./internal/storage
+go test -v ./internal/migrate ./internal/storage ./internal/importer
 ```
 
 Каждый такой тест создает временную схему и удаляет ее по завершении (общий помощник: `internal/testutil/postgres.go`).
@@ -171,14 +204,17 @@ Workflow `.github/workflows/ci.yml` запускается при push в `main`
 ## Структура проекта
 
 - `cmd/service/main.go` — точка входа сервиса
+- `cmd/import/main.go` — команда импорта отзывов из CSV
 - `cmd/bot/main.go` — точка входа бота (пока пустой `main`)
 - `internal/config/` — загрузка конфигурации из окружения
 - `internal/logger/` — конструктор JSON-логгера
 - `internal/httpapi/` — HTTP-маршруты сервиса
 - `internal/migrate/` — раннер SQL-миграций
 - `internal/storage/` — репозиторий отзывов
+- `internal/importer/` — чтение и проверка CSV, выборка, загрузка в хранилище
 - `internal/testutil/` — помощники для интеграционных тестов
 - `migrations/` — SQL-миграции и пакет `embed`
+- `testdata/` — демонстрационный CSV с вымышленными отзывами
 - `Dockerfile`, `.dockerignore`, `docker-compose.yml` — сборка и запуск в Docker
 - `.github/workflows/ci.yml` — проверки в GitHub Actions
 - `.env.example` — шаблон переменных окружения
@@ -188,4 +224,4 @@ Workflow `.github/workflows/ci.yml` запускается при push в `main`
 
 ## Что не реализовано и почему
 
-Проект в разработке, поэтому пока не реализованы: импорт отзывов из CSV, анализ через GigaChat, фоновая обработка, REST API (кроме `/healthz`), Telegram-бот (`cmd/bot/main.go` содержит пустой `main`), метрики, Prometheus и Grafana в compose, сборка образов и запуск интеграционных тестов в CI.
+Проект в разработке, поэтому пока не реализованы: анализ через GigaChat, фоновая обработка, REST API (кроме `/healthz`), Telegram-бот (`cmd/bot/main.go` содержит пустой `main`), метрики, Prometheus и Grafana в compose, сборка образов и запуск интеграционных тестов в CI.
