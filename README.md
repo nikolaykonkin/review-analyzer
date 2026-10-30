@@ -65,7 +65,7 @@ go run ./cmd/service
 
 ## Данные
 
-Для демонстрации используется датасет [DATASET_TITLE](DATASET_URL) (автор Nady Inky, Kaggle), собранный в марте 2023 года с сайта Sephora. Датасет распространяется по лицензии [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+Для демонстрации используется датасет [Sephora Products and Skincare Reviews](https://www.kaggle.com/datasets/nadyinky/sephora-products-and-skincare-reviews) (автор Nady Inky, Kaggle), собранный в марте 2023 года с сайта Sephora. Датасет распространяется по лицензии [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
 
 Изменения относительно оригинала:
 
