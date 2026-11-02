@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -14,9 +15,20 @@ const (
 	envHTTPPort    = "HTTP_PORT"
 	envLogLevel    = "LOG_LEVEL"
 
+	envGigaChatCredentials = "GIGACHAT_CREDENTIALS"
+	envGigaChatScope       = "GIGACHAT_SCOPE"
+	envGigaChatModel       = "GIGACHAT_MODEL"
+	envGigaChatCAFile      = "GIGACHAT_CA_FILE"
+
 	defaultHTTPPort = "8080"
 	defaultLogLevel = "info"
+
+	defaultGigaChatScope = "GIGACHAT_API_PERS"
+	defaultGigaChatModel = "GigaChat"
 )
+
+// gigaChatScopes - допустимые значения GIGACHAT_SCOPE (версия API GigaChat)
+var gigaChatScopes = []string{"GIGACHAT_API_PERS", "GIGACHAT_API_B2B", "GIGACHAT_API_CORP"}
 
 var (
 	// ErrInvalidValue означает, что значение переменной окружения недопустимо
@@ -30,13 +42,32 @@ type Config struct {
 	DatabaseURL string
 	HTTPPort    int
 	LogLevel    slog.Level
+	GigaChat    GigaChat
+}
+
+// GigaChat - настройки доступа к GigaChat API
+// Все они необязательны: пока Credentials пуст, анализ отзывов не настроен
+type GigaChat struct {
+	// Credentials - ключ авторизации из личного кабинета; секрет, в ошибки и логи не попадает
+	Credentials string
+	// Scope - версия API: GIGACHAT_API_PERS, GIGACHAT_API_B2B или GIGACHAT_API_CORP
+	Scope string
+	// Model - название модели, которая обрабатывает отзывы
+	Model string
+	// CAFile - путь к файлу корневого сертификата НУЦ Минцифры; пусто - только системное хранилище
+	CAFile string
+}
+
+// Enabled сообщает, задан ли ключ авторизации GigaChat
+func (g GigaChat) Enabled() bool {
+	return g.Credentials != ""
 }
 
 // Load читает конфигурацию через getenv (в приложении это os.Getenv)
 // Пустая переменная считается незаданной: для необязательных подставляется значение по умолчанию
 // Все найденные ошибки возвращаются разом через errors.Join, чтобы исправить окружение за один запуск
-// Значения HTTP_PORT и LOG_LEVEL не засекречены и попадают в текст ошибки;
-// DATABASE_URL содержит пароль, поэтому его значение в ошибки не попадает никогда
+// Значения HTTP_PORT, LOG_LEVEL и GIGACHAT_SCOPE не засекречены и попадают в текст ошибки;
+// DATABASE_URL и GIGACHAT_CREDENTIALS - секреты, их значения в ошибки не попадают никогда
 func Load(getenv func(string) string) (Config, error) {
 	var errs []error
 
@@ -55,10 +86,26 @@ func Load(getenv func(string) string) (Config, error) {
 		errs = append(errs, fmt.Errorf("%s: %w", envLogLevel, err))
 	}
 
+	scope := valueOrDefault(strings.TrimSpace(getenv(envGigaChatScope)), defaultGigaChatScope)
+	if !slices.Contains(gigaChatScopes, scope) {
+		errs = append(errs, fmt.Errorf("%s: %w: %q (допустимо: %s)",
+			envGigaChatScope, ErrInvalidValue, scope, strings.Join(gigaChatScopes, ", ")))
+	}
+
 	if joined := errors.Join(errs...); joined != nil {
 		return Config{}, joined
 	}
-	return Config{DatabaseURL: databaseURL, HTTPPort: port, LogLevel: level}, nil
+	return Config{
+		DatabaseURL: databaseURL,
+		HTTPPort:    port,
+		LogLevel:    level,
+		GigaChat: GigaChat{
+			Credentials: strings.TrimSpace(getenv(envGigaChatCredentials)),
+			Scope:       scope,
+			Model:       valueOrDefault(strings.TrimSpace(getenv(envGigaChatModel)), defaultGigaChatModel),
+			CAFile:      strings.TrimSpace(getenv(envGigaChatCAFile)),
+		},
+	}, nil
 }
 
 func valueOrDefault(value, def string) string {
