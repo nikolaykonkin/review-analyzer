@@ -4,7 +4,7 @@
 
 Сервис анализа отзывов на косметику и уход с Telegram-интерфейсом.
 
-Статус: в разработке. Реализованы загрузка конфигурации, логирование, подключение к PostgreSQL с автоматическими миграциями, слой хранения отзывов, импорт отзывов из CSV, промпт для языковой модели и проверка ее ответа (пока не подключены к сервису), каркас HTTP-сервиса с проверкой `/healthz`, корректная остановка и запуск в Docker Compose. Остальное перечислено в разделе «Что не реализовано и почему».
+Статус: в разработке. Реализованы загрузка конфигурации, логирование, подключение к PostgreSQL с автоматическими миграциями, слой хранения отзывов, импорт отзывов из CSV, промпт для языковой модели и проверка ее ответа, источник токена и клиент GigaChat API (пока не подключены к сервису), каркас HTTP-сервиса с проверкой `/healthz`, корректная остановка и запуск в Docker Compose. Остальное перечислено в разделе «Что не реализовано и почему».
 
 ## Что демонстрирует проект
 
@@ -15,6 +15,7 @@
 - Go 1.26 (см. `go.mod`)
 - PostgreSQL 17 (образ в `docker-compose.yml`), драйвер `github.com/jackc/pgx/v5`
 - HTTP и логирование: стандартная библиотека (`net/http`, `log/slog`)
+- GigaChat API (Сбер) — внешний сервис для анализа отзывов (клиент реализован, но к сервису не подключен)
 - Docker (`Dockerfile`) и Docker Compose (`docker-compose.yml`)
 - CI: GitHub Actions (`.github/workflows/ci.yml`)
 
@@ -113,8 +114,12 @@ go run ./cmd/service
 | `DATABASE_URL` | обязательна | строка подключения к PostgreSQL |
 | `HTTP_PORT` | `8080` | целое число от 1 до 65535 |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` (регистр не важен) |
+| `GIGACHAT_CREDENTIALS` | — | ключ авторизации GigaChat; пусто — GigaChat не настроен |
+| `GIGACHAT_SCOPE` | `GIGACHAT_API_PERS` | `GIGACHAT_API_PERS`, `GIGACHAT_API_B2B`, `GIGACHAT_API_CORP` |
+| `GIGACHAT_MODEL` | `GigaChat` | название модели |
+| `GIGACHAT_CA_FILE` | — | путь к PEM-файлу корневого сертификата НУЦ Минцифры; пусто — только системное хранилище |
 
-При недопустимых или пропущенных значениях сервис не стартует: `Load` собирает все ошибки через `errors.Join` и возвращает их разом, процесс завершается с кодом 1 (`cmd/service/main.go`). Значение `DATABASE_URL` содержит пароль и в тексты ошибок не попадает (это проверяет `internal/config/config_test.go`). Шаблон переменных лежит в `.env.example`. Сам файл `.env` приложение не читает: переменные нужно передать через окружение, а Docker Compose подставляет их сам.
+При недопустимых или пропущенных значениях сервис не стартует: `Load` собирает все ошибки через `errors.Join` и возвращает их разом, процесс завершается с кодом 1 (`cmd/service/main.go`). Значение `DATABASE_URL` содержит пароль и в тексты ошибок не попадает (это проверяет `internal/config/config_test.go`). Ключ `GIGACHAT_CREDENTIALS` в ошибки также не попадает (проверяет `TestLoad_GigaChatCredentialsNotInErrors`). Шаблон переменных лежит в `.env.example`. Сам файл `.env` приложение не читает: переменные нужно передать через окружение, а Docker Compose подставляет их сам.
 
 ### Логирование
 
@@ -161,7 +166,7 @@ go run ./cmd/import [-sample N] [-seed S] файл.csv [файл.csv ...]
 
 ### Анализатор и промпт
 
-Пакет `internal/analyzer` описывает результат анализа отзыва, промпт для языковой модели и проверку ее ответа. Вызова модели в пакете нет, и пока он не подключен ни к сервису, ни к импорту.
+Пакет `internal/analyzer` описывает результат анализа отзыва, промпт для языковой модели и проверку ее ответа. Вызова модели в пакете нет; клиент GigaChat реализован отдельно (`internal/gigachat`), но пока не подключен ни к сервису, ни к импорту.
 
 Что делает пакет:
 
@@ -196,7 +201,25 @@ go run ./cmd/import [-sample N] [-seed S] файл.csv [файл.csv ...]
 
 ### Клиент GigaChat
 
-(раздел в разработке)
+Пакет `internal/gigachat` реализует источник токена и клиент чата GigaChat API. Клиент не подключен к сервису и фоновому воркеру: вызов модели в проде пока не происходит.
+
+Источник токена (`internal/gigachat/token.go`):
+
+- отправляет `POST https://ngw.devices.sberbank.ru:9443/api/v2/oauth` с заголовками `RqUID` (UUID v4) и `Authorization: Basic <GIGACHAT_CREDENTIALS>`, тело запроса содержит `scope`;
+- кэширует токен на 29 минут (30 минут минус минута запаса); документация GigaChat противоречива в поле `expires_at`, поэтому срок жизни считается фиксированным;
+- метод `Invalidate()` сбрасывает кэш, чтобы клиент мог принудительно запросить новый токен;
+- `RqUID` генерируется через `crypto/rand` (UUID v4), без внешних зависимостей;
+- если задан `GIGACHAT_CA_FILE`, клиент использует этот PEM-файл для проверки TLS.
+
+Клиент чата (`internal/gigachat/client.go`):
+
+- отправляет `POST https://api.giga.chat/v1/chat/completions` с сообщениями `system` (промпт из `analyzer.SystemPrompt()`) и `user` (обернутый текст отзыва из `analyzer.UserMessage()`);
+- использует `temperature: 0` для детерминированного ответа;
+- при получении 401 вызывает `Invalidate()` у источника токена, получает новый токен и делает ровно одну повторную попытку;
+- ответ парсится, проверяется на непустой `choices[0].message.content`; текст ответа модели или промпта не попадает в ошибки;
+- ошибки оборачивают `ErrUnauthorized`, `ErrTokenResponse`, `ErrCAFile` или `ErrChatResponse` (в зависимости от этапа).
+
+Интеграционный тест `TestClient_Chat_Integration` вызывает реальный GigaChat API, прогоняет ответ через `analyzer.Parse()` и проверяет, что негативный отзыв с жалобой получает `sentiment = negative` и `priority = high`. Без переменной `GIGACHAT_CREDENTIALS` тест пропускается.
 
 ### Фоновый воркер
 
@@ -212,7 +235,7 @@ go run ./cmd/import [-sample N] [-seed S] файл.csv [файл.csv ...]
 
 ## Тесты
 
-Запуск: `go test ./...`. Есть unit-тесты загрузки конфигурации (`internal/config/config_test.go`), логгера (`internal/logger/logger_test.go`), маршрута `/healthz` (`internal/httpapi/router_test.go`), загрузки миграций (`internal/migrate/migrate_test.go`) и импорта: разбор и валидация CSV (`internal/importer/parser_test.go`), выборка (`internal/importer/sampler_test.go`), загрузка с подменой хранилища (`internal/importer/importer_test.go`). Для пакета анализатора тесты промпта и сборки сообщения (`internal/analyzer/prompt_test.go`) и разбора ответа модели (`internal/analyzer/result_test.go`); базы данных они не требуют.
+Запуск: `go test ./...`. Есть unit-тесты загрузки конфигурации (`internal/config/config_test.go`), логгера (`internal/logger/logger_test.go`), маршрута `/healthz` (`internal/httpapi/router_test.go`), загрузки миграций (`internal/migrate/migrate_test.go`) и импорта: разбор и валидация CSV (`internal/importer/parser_test.go`), выборка (`internal/importer/sampler_test.go`), загрузка с подменой хранилища (`internal/importer/importer_test.go`). Для пакета анализатора тесты промпта и сборки сообщения (`internal/analyzer/prompt_test.go`) и разбора ответа модели (`internal/analyzer/result_test.go`); базы данных они не требуют. Для пакета `internal/gigachat` есть unit-тесты источника токена, генератора `RqUID`, загрузки CA-файла и клиента чата (`token_test.go`, `rquid_test.go`, `tls_test.go`, `client_test.go`).
 
 Интеграционные тесты миграций, схемы, хранилища и идемпотентности импорта (`internal/migrate/migrate_test.go`, `internal/storage/storage_test.go`, `TestInsert_IsIdempotentWithRealStorage` в `internal/importer/importer_test.go`) работают с реальным PostgreSQL и пропускаются, если не задана `TEST_DATABASE_URL`. Запуск с базой из Docker Compose:
 
@@ -223,6 +246,13 @@ go test -v ./internal/migrate ./internal/storage ./internal/importer
 ```
 
 Каждый такой тест создает временную схему и удаляет ее по завершении (общий помощник: `internal/testutil/postgres.go`).
+
+Интеграционный тест GigaChat (`TestClient_Chat_Integration` в `internal/gigachat/client_integration_test.go`) вызывает реальный API и пропускается, если не задана `GIGACHAT_CREDENTIALS`. Запуск:
+
+```
+set -a; source .env; set +a
+go test -v ./internal/gigachat -run TestClient_Chat_Integration
+```
 
 ## Мониторинг
 
@@ -244,6 +274,7 @@ Workflow `.github/workflows/ci.yml` запускается при push в `main`
 - `internal/storage/` — репозиторий отзывов
 - `internal/importer/` — чтение и проверка CSV, выборка, загрузка в хранилище
 - `internal/analyzer/` — промпт для языковой модели и проверка ее ответа (вызова модели пока нет)
+- `internal/gigachat/` — источник токена и клиент GigaChat API (не подключены к сервису)
 - `internal/testutil/` — помощники для интеграционных тестов
 - `migrations/` — SQL-миграции и пакет `embed`
 - `testdata/` — демонстрационный CSV с вымышленными отзывами
@@ -256,4 +287,4 @@ Workflow `.github/workflows/ci.yml` запускается при push в `main`
 
 ## Что не реализовано и почему
 
-Проект в разработке, поэтому пока не реализованы: вызов GigaChat (промпт и проверка ответа есть, но к сервису не подключены), фоновая обработка (в том числе перевод отзыва в `failed` при невалидном ответе и запись результата анализа в базу), REST API (кроме `/healthz`), Telegram-бот (`cmd/bot/main.go` содержит пустой `main`), метрики, Prometheus и Grafana в compose, сборка образов и запуск интеграционных тестов в CI.
+Проект в разработке, поэтому пока не реализованы: подключение клиента GigaChat к сервису и фоновому воркеру (клиент и источник токена реализованы и протестированы, но вызов модели в проде пока не происходит), фоновая обработка (в том числе перевод отзыва в `failed` при невалидном ответе и запись результата анализа в базу), REST API (кроме `/healthz`), Telegram-бот (`cmd/bot/main.go` содержит пустой `main`), метрики, Prometheus и Grafana в compose, сборка образов и запуск интеграционных тестов в CI.
