@@ -61,7 +61,6 @@ func TestToken_CachesAndRefreshes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := requests.Add(1)
 		w.WriteHeader(http.StatusOK)
-		// Возвращаем токен вида "token-1", "token-2" и т.д.
 		_, _ = fmt.Fprintf(w, `{"access_token":"token-%d"}`, n)
 	}))
 	defer server.Close()
@@ -76,7 +75,6 @@ func TestToken_CachesAndRefreshes(t *testing.T) {
 		rquidGen: newRqUID,
 	}
 
-	// Первый запрос
 	token1, err := ts.Token(context.Background())
 	if err != nil {
 		t.Fatalf("первый Token: %v", err)
@@ -85,7 +83,6 @@ func TestToken_CachesAndRefreshes(t *testing.T) {
 		t.Errorf("первый токен = %q, ожидался token-1", token1)
 	}
 
-	// Второй запрос - из кэша
 	token2, err := ts.Token(context.Background())
 	if err != nil {
 		t.Fatalf("второй Token: %v", err)
@@ -97,7 +94,6 @@ func TestToken_CachesAndRefreshes(t *testing.T) {
 		t.Errorf("после кэша запросов: %d, ожидалось 1", requests.Load())
 	}
 
-	// Прокручиваем время за TTL
 	now = now.Add(tokenTTL + time.Minute)
 	token3, err := ts.Token(context.Background())
 	if err != nil {
@@ -108,6 +104,38 @@ func TestToken_CachesAndRefreshes(t *testing.T) {
 	}
 	if requests.Load() != 2 {
 		t.Errorf("после истечения запросов: %d, ожидалось 2", requests.Load())
+	}
+}
+
+func TestToken_Invalidate(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := requests.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, `{"access_token":"token-%d"}`, n)
+	}))
+	defer server.Close()
+
+	ts := &tokenSource{
+		http:     http.DefaultClient,
+		endpoint: server.URL,
+		creds:    "test-creds",
+		scope:    "GIGACHAT_API_PERS",
+		now:      time.Now,
+		rquidGen: newRqUID,
+	}
+
+	// Первый запрос
+	_, _ = ts.Token(context.Background())
+
+	// Сбрасываем токен
+	ts.Invalidate()
+
+	// Второй запрос должен пойти на сервер, а не взяться из кэша
+	_, _ = ts.Token(context.Background())
+
+	if requests.Load() != 2 {
+		t.Errorf("запросов: %d, ожидалось 2 (после Invalidate)", requests.Load())
 	}
 }
 

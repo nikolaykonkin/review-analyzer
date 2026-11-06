@@ -9,4 +9,6 @@ var (
 	ErrTokenResponse = errors.New("невалидный ответ сервера токенов")
 	// ErrCAFile означает проблему с чтением или разбором файла сертификата
 	ErrCAFile = errors.New("ошибка сертификата")
+	// ErrChatResponse означает невалидный ответ от API чата (ошибка сети, пустой ответ и т.д.)
+	ErrChatResponse = errors.New("невалидный ответ gigachat")
 )

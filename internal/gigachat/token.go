@@ -21,6 +21,7 @@ const (
 // TokenSource - интерфейс для получения токена
 type TokenSource interface {
 	Token(ctx context.Context) (string, error)
+	Invalidate()
 }
 
 // tokenSource реализует TokenSource с кэшированием
@@ -64,7 +65,6 @@ func (s *tokenSource) Token(ctx context.Context) (string, error) {
 		return s.token, nil
 	}
 
-	// Запрос токена
 	token, err := s.fetchToken(ctx)
 	if err != nil {
 		return "", err
@@ -73,6 +73,14 @@ func (s *tokenSource) Token(ctx context.Context) (string, error) {
 	s.token = token
 	s.expiresAt = s.now().Add(tokenTTL)
 	return token, nil
+}
+
+// Invalidate сбрасывает кэшированный токен, например, при получении 401
+func (s *tokenSource) Invalidate() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.token = ""
+	s.expiresAt = time.Time{}
 }
 
 // fetchToken делает запрос к OAuth-серверу
