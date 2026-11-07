@@ -4,7 +4,7 @@
 
 Сервис анализа отзывов на косметику и уход с Telegram-интерфейсом.
 
-Статус: в разработке. Реализованы загрузка конфигурации, логирование, подключение к PostgreSQL с автоматическими миграциями, слой хранения отзывов, импорт отзывов из CSV, промпт для языковой модели и проверка ее ответа, источник токена и клиент GigaChat API (пока не подключены к сервису), каркас HTTP-сервиса с проверкой `/healthz`, корректная остановка и запуск в Docker Compose. Остальное перечислено в разделе «Что не реализовано и почему».
+Статус: в разработке. Реализованы загрузка конфигурации, логирование, подключение к PostgreSQL с автоматическими миграциями, слой хранения отзывов, импорт отзывов из CSV, промпт для языковой модели и проверка ее ответа, источник токена и клиент GigaChat API, фоновый воркер (запускается, если задан `GIGACHAT_CREDENTIALS`), каркас HTTP-сервиса с проверкой `/healthz`, корректная остановка и запуск в Docker Compose. Остальное перечислено в разделе «Что не реализовано и почему».
 
 ## Что демонстрирует проект
 
@@ -15,7 +15,7 @@
 - Go 1.26 (см. `go.mod`)
 - PostgreSQL 17 (образ в `docker-compose.yml`), драйвер `github.com/jackc/pgx/v5`
 - HTTP и логирование: стандартная библиотека (`net/http`, `log/slog`)
-- GigaChat API (Сбер) — внешний сервис для анализа отзывов (клиент реализован, но к сервису не подключен)
+- GigaChat API (Сбер) — внешний сервис для анализа отзывов
 - Docker (`Dockerfile`) и Docker Compose (`docker-compose.yml`)
 - CI: GitHub Actions (`.github/workflows/ci.yml`)
 
@@ -51,6 +51,8 @@
    ```
 
 5. Остановка: `docker compose down`. Данные хранятся в томе `postgres_data`; `docker compose down -v` удаляет и их.
+
+Если в `.env` задан `GIGACHAT_CREDENTIALS`, сервис при старте запустит фоновый воркер: он раз в несколько секунд забирает отзывы из базы, отправляет их в GigaChat и записывает результат анализа обратно. Без ключа сервис работает как HTTP API, а воркер пишет предупреждение в лог и не запускается.
 
 Запуск сервиса без Docker (в контейнере только PostgreSQL):
 
@@ -114,7 +116,7 @@ go run ./cmd/service
 | `DATABASE_URL` | обязательна | строка подключения к PostgreSQL |
 | `HTTP_PORT` | `8080` | целое число от 1 до 65535 |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` (регистр не важен) |
-| `GIGACHAT_CREDENTIALS` | — | ключ авторизации GigaChat; пусто — GigaChat не настроен |
+| `GIGACHAT_CREDENTIALS` | — | ключ авторизации GigaChat; пусто — фоновый воркер не запускается |
 | `GIGACHAT_SCOPE` | `GIGACHAT_API_PERS` | `GIGACHAT_API_PERS`, `GIGACHAT_API_B2B`, `GIGACHAT_API_CORP` |
 | `GIGACHAT_MODEL` | `GigaChat` | название модели |
 | `GIGACHAT_CA_FILE` | — | путь к PEM-файлу корневого сертификата НУЦ Минцифры; пусто — только системное хранилище |
@@ -166,7 +168,7 @@ go run ./cmd/import [-sample N] [-seed S] файл.csv [файл.csv ...]
 
 ### Анализатор и промпт
 
-Пакет `internal/analyzer` описывает результат анализа отзыва, промпт для языковой модели и проверку ее ответа. Вызова модели в пакете нет; клиент GigaChat реализован отдельно (`internal/gigachat`), но пока не подключен ни к сервису, ни к импорту.
+Пакет `internal/analyzer` описывает результат анализа отзыва, промпт для языковой модели и проверку ее ответа. Вызова модели в пакете нет; клиент GigaChat реализован отдельно (`internal/gigachat`), а связка «клиент + проверка ответа» используется фоновым воркером (`internal/worker`).
 
 Что делает пакет:
 
@@ -195,13 +197,13 @@ go run ./cmd/import [-sample N] [-seed S] файл.csv [файл.csv ...]
 
 Приоритет возвращает модель, а код проверяет только согласованность с тональностью. Поэтому нейтральный отзыв с жалобой не получает приоритет `high`: это осознанное упрощение. Так как разбор идет через `encoding/json`, имена полей сопоставляются без учета регистра, а повтор ключа не считается ошибкой; значения полей проверяются строго.
 
-Что с невалидным ответом делать дальше (например, переводить отзыв в статус `failed`), решит фоновый воркер, которого пока нет.
+Что с невалидным ответом делать дальше (например, переводить отзыв в статус failed), решает фоновый воркер (см. раздел «Фоновый воркер»).
 
 Защита от prompt injection. Разделители и инструкция в промпте снижают риск, но это не защита. Настоящая защита: строгая проверка ответа по схеме (см. выше) и отсутствие у модели доступа к инструментам. Давать модели доступ к инструментам не планируется: ее ответ только разбирается и проверяется кодом.
 
 ### Клиент GigaChat
 
-Пакет `internal/gigachat` реализует источник токена и клиент чата GigaChat API. Клиент не подключен к сервису и фоновому воркеру: вызов модели в проде пока не происходит.
+Пакет `internal/gigachat` реализует источник токена и клиент чата GigaChat API. Клиент используется фоновым воркером: он получает отзывы из базы, отправляет их в GigaChat и записывает результат обратно.
 
 Источник токена (`internal/gigachat/token.go`):
 
@@ -223,7 +225,24 @@ go run ./cmd/import [-sample N] [-seed S] файл.csv [файл.csv ...]
 
 ### Фоновый воркер
 
-(раздел в разработке)
+Фоновый воркер (`internal/worker/worker.go`) обрабатывает отзывы со статусом `pending`: отправляет их в GigaChat, проверяет ответ и записывает результат в базу. Воркер запускается вместе с сервисом, если задан `GIGACHAT_CREDENTIALS` (`cmd/service/main.go`); без ключа сервис работает только как HTTP API и пишет предупреждение в лог.
+
+Как устроен цикл:
+
+- раз в 5 секунд воркер забирает из базы пачку до 10 отзывов со статусом `pending`;
+- отзывы захватываются атомарно одним SQL-запросом с `FOR UPDATE SKIP LOCKED`: два экземпляра сервиса не возьмут один отзыв;
+- захваченные отзывы переводятся в статус `processing` и раскидываются по 3 горутинам через канал;
+- каждый отзыв обрабатывается с таймаутом 2 минуты (константа `analyzeTimeout`);
+- если GigaChat вернул ошибку или ответ не прошел `analyzer.Parse`, отзыв переводится в `failed`;
+- если ответ валиден, отзыв переводится в `done` и заполняются `sentiment`, `topics`, `priority`, `summary`.
+
+При старте воркер вызывает `ResetProcessingReviews`: все отзывы, оставшиеся в статусе `processing` после падения предыдущего запуска, возвращаются в `pending`. При остановке сервиса воркер дожидается завершения текущих задач (через `sync.WaitGroup`), а обновление статуса в базе выполняется с `context.WithoutCancel`, чтобы отмена контекста не оставила отзыв в `processing`.
+
+Связка «GigaChat + проверка ответа» реализована в `GigaChatAnalyzer` (`internal/worker/worker.go`): он вызывает `gigachat.Client.Chat` с промптом из `analyzer.SystemPrompt()`, оборачивает текст отзыва через `analyzer.UserMessage()` и проверяет ответ через `analyzer.Parse()`.
+
+Воркер тестируется с mock-хранилищем и mock-анализатором (`internal/worker/worker_test.go`); реальная база и GigaChat для этих тестов не нужны.
+
+Ограничение: `ResetProcessingReviews` корректен только при одном экземпляре сервиса. Если запущено несколько экземпляров, сброс одного может вернуть в `pending` отзыв, который прямо сейчас обрабатывает другой. Для пет-проекта это осознанное упрощение.
 
 ### Telegram-бот
 
@@ -235,7 +254,7 @@ go run ./cmd/import [-sample N] [-seed S] файл.csv [файл.csv ...]
 
 ## Тесты
 
-Запуск: `go test ./...`. Есть unit-тесты загрузки конфигурации (`internal/config/config_test.go`), логгера (`internal/logger/logger_test.go`), маршрута `/healthz` (`internal/httpapi/router_test.go`), загрузки миграций (`internal/migrate/migrate_test.go`) и импорта: разбор и валидация CSV (`internal/importer/parser_test.go`), выборка (`internal/importer/sampler_test.go`), загрузка с подменой хранилища (`internal/importer/importer_test.go`). Для пакета анализатора тесты промпта и сборки сообщения (`internal/analyzer/prompt_test.go`) и разбора ответа модели (`internal/analyzer/result_test.go`); базы данных они не требуют. Для пакета `internal/gigachat` есть unit-тесты источника токена, генератора `RqUID`, загрузки CA-файла и клиента чата (`token_test.go`, `rquid_test.go`, `tls_test.go`, `client_test.go`).
+Запуск: `go test ./...`. Есть unit-тесты загрузки конфигурации (`internal/config/config_test.go`), логгера (`internal/logger/logger_test.go`), маршрута `/healthz` (`internal/httpapi/router_test.go`), загрузки миграций (`internal/migrate/migrate_test.go`) и импорта: разбор и валидация CSV (`internal/importer/parser_test.go`), выборка (`internal/importer/sampler_test.go`), загрузка с подменой хранилища (`internal/importer/importer_test.go`). Для пакета анализатора тесты промпта и сборки сообщения (`internal/analyzer/prompt_test.go`) и разбора ответа модели (`internal/analyzer/result_test.go`); базы данных они не требуют. Для пакета `internal/gigachat` есть unit-тесты источника токена, генератора `RqUID`, загрузки CA-файла и клиента чата (`token_test.go`, `rquid_test.go`, `tls_test.go`, `client_test.go`). Для пакета `internal/worker` есть unit-тесты с mock-хранилищем и mock-анализатором (`worker_test.go`); базы данных и GigaChat они не требуют.
 
 Интеграционные тесты миграций, схемы, хранилища и идемпотентности импорта (`internal/migrate/migrate_test.go`, `internal/storage/storage_test.go`, `TestInsert_IsIdempotentWithRealStorage` в `internal/importer/importer_test.go`) работают с реальным PostgreSQL и пропускаются, если не задана `TEST_DATABASE_URL`. Запуск с базой из Docker Compose:
 
@@ -260,7 +279,7 @@ go test -v ./internal/gigachat -run TestClient_Chat_Integration
 
 ## CI/CD
 
-Workflow `.github/workflows/ci.yml` запускается при push в `main` и для pull request. Проверки: `gofmt -l`, `go vet`, `go build`, `go test`. В CI не задана `TEST_DATABASE_URL`, поэтому интеграционные тесты там пропускаются. Сборка Docker-образов в CI пока не подключена.
+Workflow `.github/workflows/ci.yml` запускается при push в `main` и для pull request. Проверки: `gofmt -l`, `go vet`, `go build`, `go test`. В CI не заданы `TEST_DATABASE_URL` и `GIGACHAT_CREDENTIALS`, поэтому интеграционные тесты базы данных и GigaChat там пропускаются. Сборка Docker-образов в CI пока не подключена.
 
 ## Структура проекта
 
@@ -273,8 +292,9 @@ Workflow `.github/workflows/ci.yml` запускается при push в `main`
 - `internal/migrate/` — раннер SQL-миграций
 - `internal/storage/` — репозиторий отзывов
 - `internal/importer/` — чтение и проверка CSV, выборка, загрузка в хранилище
-- `internal/analyzer/` — промпт для языковой модели и проверка ее ответа (вызова модели пока нет)
-- `internal/gigachat/` — источник токена и клиент GigaChat API (не подключены к сервису)
+- `internal/analyzer/` — промпт для языковой модели и проверка ее ответа
+- `internal/gigachat/` — источник токена и клиент GigaChat API
+- `internal/worker/` — фоновый воркер: захват отзывов из базы, отправка в GigaChat, обновление статуса
 - `internal/testutil/` — помощники для интеграционных тестов
 - `migrations/` — SQL-миграции и пакет `embed`
 - `testdata/` — демонстрационный CSV с вымышленными отзывами
@@ -287,4 +307,4 @@ Workflow `.github/workflows/ci.yml` запускается при push в `main`
 
 ## Что не реализовано и почему
 
-Проект в разработке, поэтому пока не реализованы: подключение клиента GigaChat к сервису и фоновому воркеру (клиент и источник токена реализованы и протестированы, но вызов модели в проде пока не происходит), фоновая обработка (в том числе перевод отзыва в `failed` при невалидном ответе и запись результата анализа в базу), REST API (кроме `/healthz`), Telegram-бот (`cmd/bot/main.go` содержит пустой `main`), метрики, Prometheus и Grafana в compose, сборка образов и запуск интеграционных тестов в CI.
+Проект в разработке, поэтому пока не реализованы: REST API (кроме `/healthz`), Telegram-бот (`cmd/bot/main.go` содержит пустой `main`), метрики, Prometheus и Grafana в compose, сборка образов и запуск интеграционных тестов в CI.
