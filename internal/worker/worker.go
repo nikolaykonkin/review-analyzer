@@ -117,16 +117,22 @@ func (w *Worker) processJob(ctx context.Context, rev storage.Review) {
 	defer cancel()
 
 	result, err := w.analyzer.Analyze(analyzeCtx, rev.ReviewText)
+
+	// Создаем контекст для обновления статуса в базе
+	// context.WithoutCancel гарантирует, что обновление пройдет,
+	// даже если основной контекст отменен (например, при остановке сервиса)
+	dbCtx, dbCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer dbCancel()
+
 	if err != nil {
 		w.log.Error("анализ отзыва", slog.Int64("review_id", rev.ID), slog.Any("error", err))
-		// Используем родительский ctx для обновления, так как analyzeCtx уже мог истечь
-		if err := w.storage.UpdateReviewFailed(ctx, rev.ID); err != nil {
+		if err := w.storage.UpdateReviewFailed(dbCtx, rev.ID); err != nil {
 			w.log.Error("обновление статуса failed", slog.Int64("review_id", rev.ID), slog.Any("error", err))
 		}
 		return
 	}
 
-	if err := w.storage.UpdateReviewDone(ctx, rev.ID, result); err != nil {
+	if err := w.storage.UpdateReviewDone(dbCtx, rev.ID, result); err != nil {
 		w.log.Error("обновление статуса done", slog.Int64("review_id", rev.ID), slog.Any("error", err))
 		return
 	}
