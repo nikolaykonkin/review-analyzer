@@ -19,6 +19,13 @@ type reviewResponse struct {
 
 // newReviewResponse конвертирует доменную модель в DTO
 func newReviewResponse(r storage.Review) reviewResponse {
+	// В Go nil-слайс при сериализации в JSON превращается в null
+	// Чтобы контракт API был предсказуемым, всегда отдаем массив
+	topics := r.Topics
+	if topics == nil {
+		topics = []string{}
+	}
+
 	return reviewResponse{
 		ID:          r.ID,
 		ProductName: r.ProductName,
@@ -27,7 +34,7 @@ func newReviewResponse(r storage.Review) reviewResponse {
 		Rating:      r.Rating,
 		Status:      string(r.Status),
 		Sentiment:   r.Sentiment,
-		Topics:      r.Topics,
+		Topics:      topics,
 		Priority:    r.Priority,
 		Summary:     r.Summary,
 	}

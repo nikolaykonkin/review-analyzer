@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -51,9 +52,26 @@ func TestGetReview_Success(t *testing.T) {
 	if contentType := rec.Header().Get("Content-Type"); contentType != "application/json" {
 		t.Errorf("Content-Type = %q, ожидался application/json", contentType)
 	}
-	// Проверяем, что вернулся валидный JSON
-	if rec.Body.Len() == 0 {
-		t.Error("тело ответа пустое")
+
+	// Проверяем JSON-контракт
+	var got map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("ответ не JSON: %v", err)
+	}
+	if got["id"] != float64(1) {
+		t.Errorf("id = %v, ожидалось 1", got["id"])
+	}
+	if got["status"] != "done" {
+		t.Errorf("status = %v, ожидалось done", got["status"])
+	}
+	if _, ok := got["brand_name"]; ok {
+		t.Error("brand_name должен отсутствовать при nil (omitempty)")
+	}
+	if topics, ok := got["topics"].([]any); !ok || len(topics) != 0 {
+		t.Errorf("topics = %v, ожидался пустой массив", got["topics"])
+	}
+	if got["summary"] != summary {
+		t.Errorf("summary = %v, ожидалось %q", got["summary"], summary)
 	}
 }
 
