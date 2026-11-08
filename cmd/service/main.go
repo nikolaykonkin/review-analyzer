@@ -101,7 +101,7 @@ func run() error {
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),
-		Handler:           httpapi.NewRouter(),
+		Handler:           httpapi.NewRouter(repo, log), // <-- Передаем репозиторий и логгер
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
 

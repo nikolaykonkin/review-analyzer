@@ -1,12 +1,19 @@
 // Пакет httpapi содержит HTTP-маршруты сервиса
 package httpapi
 
-import "net/http"
+import (
+	"log/slog"
+	"net/http"
+)
 
 // NewRouter возвращает маршрутизатор сервиса
-func NewRouter() http.Handler {
+func NewRouter(storage Storage, log *slog.Logger) http.Handler {
+	h := NewHandler(storage, log)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
+	mux.HandleFunc("GET /reviews/{id}", h.handleGetReview)
+
 	return mux
 }
 
