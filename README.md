@@ -4,7 +4,7 @@
 
 Сервис анализа отзывов на косметику и уход с Telegram-интерфейсом.
 
-Статус: в разработке. Реализованы загрузка конфигурации, логирование, подключение к PostgreSQL с автоматическими миграциями, слой хранения отзывов, импорт отзывов из CSV, промпт для языковой модели и проверка ее ответа, источник токена и клиент GigaChat API, фоновый воркер (запускается, если задан `GIGACHAT_CREDENTIALS`), HTTP-сервис с проверкой `/healthz` и получением отзыва по id, корректная остановка и запуск в Docker Compose. Остальное перечислено в разделе «Что не реализовано и почему».
+Статус: в разработке. Реализованы загрузка конфигурации, логирование, подключение к PostgreSQL с автоматическими миграциями, слой хранения отзывов, импорт отзывов из CSV, промпт для языковой модели и проверка ее ответа, источник токена и клиент GigaChat API, фоновый воркер (запускается, если задан `GIGACHAT_CREDENTIALS`), HTTP-сервис с проверкой `/healthz`, получением отзыва по id и статистикой, Telegram-бот (тонкий клиент к API), корректная остановка и запуск в Docker Compose. Остальное перечислено в разделе «Что не реализовано и почему».
 
 ## Что демонстрирует проект
 
@@ -16,6 +16,7 @@
 - PostgreSQL 17 (образ в `docker-compose.yml`), драйвер `github.com/jackc/pgx/v5`
 - HTTP и логирование: стандартная библиотека (`net/http`, `log/slog`)
 - GigaChat API (Сбер) — внешний сервис для анализа отзывов
+- Telegram Bot API (библиотека `github.com/go-telegram/bot`)
 - Docker (`Dockerfile`) и Docker Compose (`docker-compose.yml`)
 - CI: GitHub Actions (`.github/workflows/ci.yml`)
 
@@ -57,6 +58,13 @@
    ```
 
 6. Остановка: `docker compose down`. Данные хранятся в томе `postgres_data`; `docker compose down -v` удаляет и их.
+
+7. Запустите Telegram-бота (нужен TELEGRAM_BOT_TOKEN в .env):
+
+```
+set -a; source .env; set +a
+go run ./cmd/bot
+```
 
 Если в `.env` задан `GIGACHAT_CREDENTIALS`, сервис при старте запустит фоновый воркер: он раз в несколько секунд забирает отзывы из базы, отправляет их в GigaChat и записывает результат анализа обратно. Без ключа сервис работает как HTTP API, а воркер пишет предупреждение в лог и не запускается.
 
@@ -129,6 +137,18 @@ go run ./cmd/service
 
 При недопустимых или пропущенных значениях сервис не стартует: `Load` собирает все ошибки через `errors.Join` и возвращает их разом, процесс завершается с кодом 1 (`cmd/service/main.go`). Значение `DATABASE_URL` содержит пароль и в тексты ошибок не попадает (это проверяет `internal/config/config_test.go`). Ключ `GIGACHAT_CREDENTIALS` в ошибки также не попадает (проверяет `TestLoad_GigaChatCredentialsNotInErrors`). Шаблон переменных лежит в `.env.example`. Сам файл `.env` приложение не читает: переменные нужно передать через окружение, а Docker Compose подставляет их сам.
 
+### Конфигурация бота
+
+Бот читает свои настройки функцией `config.LoadBot` (`internal/config/bot.go`). Эти переменные не нужны сервису.
+
+| Переменная | По умолчанию | Допустимые значения |
+|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | обязательна | токен из @BotFather |
+| `TELEGRAM_ALLOWED_CHAT_IDS` | — | ID чатов через запятую; пусто — разрешено всем |
+| `API_URL` | `http://localhost:8080` | адрес API сервиса |
+
+Если `TELEGRAM_ALLOWED_CHAT_IDS` задан, бот игнорирует сообщения от других чатов и пишет их ID в лог (это проверяет middleware). Если пусто, доступ открыт всем — удобно для локальной отладки.
+
 ### Логирование
 
 Логи пишутся в stdout в формате JSON через `log/slog` (`internal/logger/logger.go`). Минимальный уровень задается переменной `LOG_LEVEL`.
@@ -159,6 +179,10 @@ SQL-файлы из `migrations/` встраиваются в бинарник (
 
 - `GET /healthz` возвращает 200 и тело `ok`; другие методы этого пути получают 405.
 - `GET /reviews/{id}` возвращает отзыв в формате JSON. `id` должен быть целым числом (иначе 400), при отсутствии отзыва возвращается 404, при внутренней ошибке базы — 500. Детали ошибки пишутся в лог, клиенту отдается общий текст без SQL.
+
+- `GET /reviews/latest` возвращает последний добавленный отзыв (или 404, если база пуста).
+- `GET /reviews/random` возвращает случайный отзыв (или 404).
+- `GET /stats` возвращает статистику по статусам: `{"pending": 0, "processing": 0, "done": 0, "failed": 0, "total": 0}`.
 
 Ответ `GET /reviews/{id}` собирается через DTO (`internal/httpapi/dto.go`), отдельный от `storage.Review`, чтобы не смешивать слои БД и API. Поля `brand_name`, `sentiment`, `priority` и `summary` опускаются, если пусты (`omitempty`); `topics` всегда отдается массивом (пустой массив `[]`, если темы еще не заполнены). Хендлеры лежат в `internal/httpapi/handlers.go` и получают зависимости через структуру `Handler` (интерфейс `Storage` и `*slog.Logger`).
 
@@ -257,15 +281,27 @@ go run ./cmd/import [-sample N] [-seed S] файл.csv [файл.csv ...]
 
 ### Telegram-бот
 
-(раздел в разработке)
+Бот (`cmd/bot/main.go`) — это тонкий клиент к HTTP API сервиса. Он не работает с базой данных напрямую. Логика вынесена в пакет `internal/bot`, а HTTP-клиент к API — в `internal/apiclient`.
+
+Команды:
+
+- `/start` — приветствие и инлайн-кнопки («Последний отзыв», «Случайный отзыв», «Статистика», «Помощь»).
+- `/help` — список доступных команд.
+- `/review <id>` — получить конкретный отзыв по ID (например, `/review 15`).
+
+Кнопки используют те же эндпоинты API (`/reviews/latest`, `/reviews/random`, `/stats`). Сообщения отправляются в формате HTML, а все динамические данные (название продукта, бренд, summary, текст отзыва) проходят через `html.EscapeString`, чтобы символы вроде `<` или `&` не сломали разметку.
+
+Доступ контролируется белым списком `TELEGRAM_ALLOWED_CHAT_IDS` (через middleware). Если список пуст, бот доступен всем.
+
+Форматирование сообщений покрыто unit-тестами (`internal/bot/formatter_test.go`), которые проверяют экранирование HTML.
 
 ## Docker
 
-`Dockerfile` собирает статические бинарники (`CGO_ENABLED=0`) и содержит два итоговых образа: `service` и `bot`, выбор через `target`. Образы работают от непривилегированного пользователя `app`; у `service` есть `HEALTHCHECK` по `/healthz`. `docker-compose.yml` запускает PostgreSQL 17 с проверкой готовности и сервис, который стартует после готовности базы. Порты привязаны к `127.0.0.1`; порты на хосте задаются `POSTGRES_HOST_PORT` и `SERVICE_HOST_PORT`. Каталог `data/` исключен из контекста сборки (`.dockerignore`). Образ `bot` собирается, но бот пока не реализован и в compose не входит. Команда импорта в образы не включена.
+`Dockerfile` собирает статические бинарники (`CGO_ENABLED=0`) и содержит два итоговых образа: `service` и `bot`, выбор через `target`. Образы работают от непривилегированного пользователя `app`; у `service` есть `HEALTHCHECK` по `/healthz`. `docker-compose.yml` запускает PostgreSQL 17 с проверкой готовности и сервис, который стартует после готовности базы. Порты привязаны к `127.0.0.1`; порты на хосте задаются `POSTGRES_HOST_PORT` и `SERVICE_HOST_PORT`. Каталог `data/` исключен из контекста сборки (`.dockerignore`). Образ `bot` собирается, но в `docker-compose.yml` сервис бота пока не описан. Команда импорта в образы не включена.
 
 ## Тесты
 
-Запуск: `go test ./...`. Есть unit-тесты загрузки конфигурации (`internal/config/config_test.go`), логгера (`internal/logger/logger_test.go`), маршрута `/healthz` (`internal/httpapi/router_test.go`), загрузки миграций (`internal/migrate/migrate_test.go`) и импорта: разбор и валидация CSV (`internal/importer/parser_test.go`), выборка (`internal/importer/sampler_test.go`), загрузка с подменой хранилища (`internal/importer/importer_test.go`). Для пакета анализатора тесты промпта и сборки сообщения (`internal/analyzer/prompt_test.go`) и разбора ответа модели (`internal/analyzer/result_test.go`); базы данных они не требуют. Для пакета `internal/gigachat` есть unit-тесты источника токена, генератора `RqUID`, загрузки CA-файла и клиента чата (`token_test.go`, `rquid_test.go`, `tls_test.go`, `client_test.go`). Для пакета `internal/worker` есть unit-тесты с mock-хранилищем и mock-анализатором (`worker_test.go`); базы данных и GigaChat они не требуют. Для пакета `internal/httpapi` есть unit-тесты хендлеров (`handlers_test.go`) с mock-хранилищем: успешный ответ, невалидный id, 404 и 500, а также проверка JSON-контракта (поля, `omitempty`, `topics` как массив).
+Запуск: `go test ./...`. Есть unit-тесты загрузки конфигурации (`internal/config/config_test.go`), логгера (`internal/logger/logger_test.go`), маршрута `/healthz` (`internal/httpapi/router_test.go`), загрузки миграций (`internal/migrate/migrate_test.go`) и импорта: разбор и валидация CSV (`internal/importer/parser_test.go`), выборка (`internal/importer/sampler_test.go`), загрузка с подменой хранилища (`internal/importer/importer_test.go`). Для пакета анализатора тесты промпта и сборки сообщения (`internal/analyzer/prompt_test.go`) и разбора ответа модели (`internal/analyzer/result_test.go`); базы данных они не требуют. Для пакета `internal/gigachat` есть unit-тесты источника токена, генератора `RqUID`, загрузки CA-файла и клиента чата (`token_test.go`, `rquid_test.go`, `tls_test.go`, `client_test.go`). Для пакета `internal/worker` есть unit-тесты с mock-хранилищем и mock-анализатором (`worker_test.go`); базы данных и GigaChat они не требуют. Для пакета `internal/httpapi` есть unit-тесты хендлеров (`handlers_test.go`) с mock-хранилищем: успешный ответ, невалидный id, 404 и 500, а также проверка JSON-контракта (поля, omitempty, topics как массив). Для пакета `internal/bot` есть unit-тесты форматирования сообщений (`formatter_test.go`), включая проверку экранирования HTML.
 
 Интеграционные тесты миграций, схемы, хранилища и идемпотентности импорта (`internal/migrate/migrate_test.go`, `internal/storage/storage_test.go`, `TestInsert_IsIdempotentWithRealStorage` в `internal/importer/importer_test.go`) работают с реальным PostgreSQL и пропускаются, если не задана `TEST_DATABASE_URL`. Запуск с базой из Docker Compose:
 
@@ -303,7 +339,7 @@ Workflow `.github/workflows/ci.yml` запускается при push в `main`
 
 - `cmd/service/main.go` — точка входа сервиса
 - `cmd/import/main.go` — команда импорта отзывов из CSV
-- `cmd/bot/main.go` — точка входа бота (пока пустой `main`)
+- `cmd/bot/main.go` — точка входа бота
 - `internal/config/` — загрузка конфигурации из окружения
 - `internal/logger/` — конструктор JSON-логгера
 - `internal/httpapi/` — HTTP-маршруты сервиса, хендлеры и DTO
@@ -313,6 +349,8 @@ Workflow `.github/workflows/ci.yml` запускается при push в `main`
 - `internal/analyzer/` — промпт для языковой модели и проверка ее ответа
 - `internal/gigachat/` — источник токена и клиент GigaChat API
 - `internal/worker/` — фоновый воркер: захват отзывов из базы, отправка в GigaChat, обновление статуса
+- `internal/apiclient/` — HTTP-клиент к API сервиса для бота
+- `internal/bot/` — логика Telegram-бота, команды, кнопки и форматирование
 - `internal/testutil/` — помощники для интеграционных тестов
 - `migrations/` — SQL-миграции и пакет `embed`
 - `testdata/` — демонстрационный CSV с вымышленными отзывами
@@ -325,4 +363,4 @@ Workflow `.github/workflows/ci.yml` запускается при push в `main`
 
 ## Что не реализовано и почему
 
-Проект в разработке, поэтому пока не реализованы: остальные REST-маршруты (кроме `/healthz` и `GET /reviews/{id}`), Telegram-бот (`cmd/bot/main.go` содержит пустой `main`), метрики, Prometheus и Grafana в compose, сборка образов и запуск интеграционных тестов в CI.
+Проект в разработке, поэтому пока не реализованы: метрики, Prometheus и Grafana в compose, сборка образов и запуск интеграционных тестов в CI.
