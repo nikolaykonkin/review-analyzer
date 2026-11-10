@@ -227,3 +227,69 @@ func TestResetProcessingReviews(t *testing.T) {
 		t.Errorf("после сброса не удалось снова захватить отзыв")
 	}
 }
+
+func TestGetLatestReview(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+
+	if _, err := repo.GetLatestReview(ctx); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("на пустой базе ожидалась ErrNotFound, получено: %v", err)
+	}
+
+	_, _, _ = repo.InsertReview(ctx, sampleReview("first"))
+	id2, _, _ := repo.InsertReview(ctx, sampleReview("second"))
+
+	got, err := repo.GetLatestReview(ctx)
+	if err != nil {
+		t.Fatalf("GetLatestReview: %v", err)
+	}
+	if got.ID != id2 {
+		t.Errorf("ID = %d, ожидался последний %d", got.ID, id2)
+	}
+}
+
+func TestGetRandomReview(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+
+	if _, err := repo.GetRandomReview(ctx); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("на пустой базе ожидалась ErrNotFound, получено: %v", err)
+	}
+
+	_, _, _ = repo.InsertReview(ctx, sampleReview("only"))
+	got, err := repo.GetRandomReview(ctx)
+	if err != nil {
+		t.Fatalf("GetRandomReview: %v", err)
+	}
+	if got.ProductName == "" {
+		t.Error("поля отзыва не заполнены")
+	}
+}
+
+func TestCountByStatus(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+
+	// На пустой базе все статусы равны 0
+	counts, err := repo.CountByStatus(ctx)
+	if err != nil {
+		t.Fatalf("CountByStatus: %v", err)
+	}
+	for _, s := range []Status{StatusPending, StatusProcessing, StatusDone, StatusFailed} {
+		if counts[s] != 0 {
+			t.Errorf("статус %q: %d, ожидалось 0", s, counts[s])
+		}
+	}
+
+	// Вставляем два отзыва (оба pending)
+	_, _, _ = repo.InsertReview(ctx, sampleReview("a"))
+	_, _, _ = repo.InsertReview(ctx, sampleReview("b"))
+
+	counts, err = repo.CountByStatus(ctx)
+	if err != nil {
+		t.Fatalf("CountByStatus: %v", err)
+	}
+	if counts[StatusPending] != 2 {
+		t.Errorf("pending = %d, ожидалось 2", counts[StatusPending])
+	}
+}

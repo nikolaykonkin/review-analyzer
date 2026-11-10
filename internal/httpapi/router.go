@@ -13,6 +13,9 @@ func NewRouter(storage Storage, log *slog.Logger) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.HandleFunc("GET /reviews/{id}", h.handleGetReview)
+	mux.HandleFunc("GET /reviews/latest", h.handleGetLatestReview)
+	mux.HandleFunc("GET /reviews/random", h.handleGetRandomReview)
+	mux.HandleFunc("GET /stats", h.handleGetStats)
 
 	return mux
 }

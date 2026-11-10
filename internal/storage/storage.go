@@ -194,3 +194,79 @@ func (r *Repository) ResetProcessingReviews(ctx context.Context) error {
 	}
 	return nil
 }
+
+// GetLatestReview возвращает отзыв с наибольшим id или ErrNotFound
+func (r *Repository) GetLatestReview(ctx context.Context) (Review, error) {
+	const query = `
+		SELECT id, product_name, brand_name, review_text, rating, reviewed_at,
+		       status, sentiment, topics, priority, summary, created_at
+		FROM reviews
+		ORDER BY id DESC
+		LIMIT 1`
+	return r.querySingleReview(ctx, query)
+}
+
+// GetRandomReview возвращает случайный отзыв или ErrNotFound
+func (r *Repository) GetRandomReview(ctx context.Context) (Review, error) {
+	const query = `
+		SELECT id, product_name, brand_name, review_text, rating, reviewed_at,
+		       status, sentiment, topics, priority, summary, created_at
+		FROM reviews
+		ORDER BY RANDOM()
+		LIMIT 1`
+	return r.querySingleReview(ctx, query)
+}
+
+// querySingleReview выполняет запрос, возвращающий одну строку, и маппит ее в Review
+func (r *Repository) querySingleReview(ctx context.Context, query string) (Review, error) {
+	var (
+		review Review
+		status string
+	)
+	err := r.pool.QueryRow(ctx, query).Scan(
+		&review.ID, &review.ProductName, &review.BrandName, &review.ReviewText,
+		&review.Rating, &review.ReviewedAt, &status, &review.Sentiment,
+		&review.Topics, &review.Priority, &review.Summary, &review.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Review{}, ErrNotFound
+	}
+	if err != nil {
+		return Review{}, fmt.Errorf("чтение отзыва: %w", err)
+	}
+	review.Status = Status(status)
+	return review, nil
+}
+
+// CountByStatus возвращает количество отзывов для каждого статуса
+// В мапе всегда присутствуют все четыре статуса (0, если отзывов нет)
+func (r *Repository) CountByStatus(ctx context.Context) (map[Status]int, error) {
+	const query = `SELECT status, count(*) FROM reviews GROUP BY status`
+
+	rows, err := r.pool.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("подсчет отзывов по статусам: %w", err)
+	}
+	defer rows.Close()
+
+	counts := map[Status]int{
+		StatusPending:    0,
+		StatusProcessing: 0,
+		StatusDone:       0,
+		StatusFailed:     0,
+	}
+	for rows.Next() {
+		var (
+			status string
+			count  int
+		)
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, fmt.Errorf("чтение строки статистики: %w", err)
+		}
+		counts[Status(status)] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("подсчет отзывов по статусам: %w", err)
+	}
+	return counts, nil
+}

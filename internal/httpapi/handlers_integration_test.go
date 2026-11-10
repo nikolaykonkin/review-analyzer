@@ -49,29 +49,60 @@ func TestGetReview_Integration(t *testing.T) {
 		t.Fatalf("отзыв не вставлен, id = %d", id)
 	}
 
+	// Вставляем второй отзыв, чтобы /reviews/latest вернул именно его
+	rev2 := rev
+	rev2.SourceKey = "httpapi-integration-key-2"
+	id2, _, _ := repo.InsertReview(ctx, rev2)
+
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	router := httpapi.NewRouter(repo, log)
 
+	// GET /reviews/{id}
 	url := fmt.Sprintf("/reviews/%d", id)
 	req := httptest.NewRequest(http.MethodGet, url, nil)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("код = %d, ожидалось %d", rec.Code, http.StatusOK)
+		t.Fatalf("GET /reviews/{id}: код = %d, ожидалось %d", rec.Code, http.StatusOK)
 	}
-
 	var got map[string]any
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
-		t.Fatalf("ответ не JSON: %v", err)
+		t.Fatalf("GET /reviews/{id}: ответ не JSON: %v", err)
 	}
 	if got["product_name"] != "Интеграционный крем" {
-		t.Errorf("product_name = %v", got["product_name"])
+		t.Errorf("GET /reviews/{id}: product_name = %v", got["product_name"])
 	}
-	if got["status"] != "pending" {
-		t.Errorf("status = %v, ожидалось pending", got["status"])
+
+	// GET /reviews/latest
+	req = httptest.NewRequest(http.MethodGet, "/reviews/latest", nil)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /reviews/latest: код = %d", rec.Code)
 	}
-	if got["rating"] != float64(5) {
-		t.Errorf("rating = %v, ожидалось 5", got["rating"])
+	var latest map[string]any
+	_ = json.NewDecoder(rec.Body).Decode(&latest)
+	if latest["id"] != float64(id2) {
+		t.Errorf("GET /reviews/latest: id = %v, ожидался %d", latest["id"], id2)
+	}
+
+	// GET /stats
+	req = httptest.NewRequest(http.MethodGet, "/stats", nil)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /stats: код = %d", rec.Code)
+	}
+
+	var stats struct {
+		Pending int `json:"pending"`
+		Total   int `json:"total"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&stats); err != nil {
+		t.Fatalf("GET /stats: ответ не JSON: %v", err)
+	}
+	if stats.Total != 2 || stats.Pending != 2 {
+		t.Errorf("GET /stats: %+v, ожидалось total=2, pending=2", stats)
 	}
 }

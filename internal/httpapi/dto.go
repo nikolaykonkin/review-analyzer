@@ -39,3 +39,12 @@ func newReviewResponse(r storage.Review) reviewResponse {
 		Summary:     r.Summary,
 	}
 }
+
+// statsResponse - DTO для отдачи статистики по статусам отзывов
+type statsResponse struct {
+	Pending    int `json:"pending"`
+	Processing int `json:"processing"`
+	Done       int `json:"done"`
+	Failed     int `json:"failed"`
+	Total      int `json:"total"`
+}
