@@ -18,6 +18,7 @@
 - GigaChat API (Сбер) — внешний сервис для анализа отзывов
 - Telegram Bot API (библиотека `github.com/go-telegram/bot`)
 - Docker (`Dockerfile`) и Docker Compose (`docker-compose.yml`)
+- Мониторинг: Prometheus и Grafana (в `docker-compose.yml`)
 - CI: GitHub Actions (`.github/workflows/ci.yml`)
 
 Остальные технологии добавляются по мере появления в коде.
@@ -65,6 +66,8 @@
 set -a; source .env; set +a
 go run ./cmd/bot
 ```
+
+Prometheus доступен на `http://localhost:9090`, Grafana — на `http://localhost:3000` (логин `admin`, пароль `admin` по умолчанию).
 
 Если в `.env` задан `GIGACHAT_CREDENTIALS`, сервис при старте запустит фоновый воркер: он раз в несколько секунд забирает отзывы из базы, отправляет их в GigaChat и записывает результат анализа обратно. Без ключа сервис работает как HTTP API, а воркер пишет предупреждение в лог и не запускается.
 
@@ -329,7 +332,27 @@ go test -v ./internal/gigachat -run TestClient_Chat_Integration
 
 ## Мониторинг
 
-(раздел в разработке)
+Сервис экспортирует метрики Prometheus по маршруту `GET /metrics`. Формат текстовый (OpenMetrics), эндпоинт доступен на том же порту, что и HTTP API (по умолчанию 8080). Сам эндпоинт `/metrics` исключен из middleware сбора HTTP-метрик, чтобы не искажать статистику.
+
+Собираются три группы метрик:
+
+- стандартные метрики Go runtime и процесса (`go_goroutines`, `go_memstats_*`, `process_cpu_seconds_total`);
+- HTTP-метрики: `http_requests_total` (счетчик с лейблами `method`, `route`, `status`) и `http_request_duration_seconds` (гистограмма с лейблами `method`, `route`); для лейбла `route` используется шаблон маршрута (`/reviews/{id}`, а не сырой URL), чтобы избежать взрыва кардинальности;
+- метрики воркера: `gigachat_reviews_processed_total` (счетчик с лейблом `status` — `done` или `failed`) и `gigachat_request_duration_seconds` (гистограмма длительности запроса к GigaChat).
+
+`docker-compose.yml` поднимает Prometheus и Grafana:
+
+- Prometheus скрейпит `service:8080/metrics` раз в 15 секунд (конфиг `prometheus/prometheus.yml`), данные хранятся в томе `prometheus_data`;
+- Grafana использует provisioning (подход «config as code»): датасорс и дашборд загружаются автоматически из `grafana/provisioning/` и `grafana/dashboards/`. Данные Grafana хранятся в томе `grafana_data`.
+
+Дашборд «Review Analyzer» содержит четыре панели:
+
+- HTTP RPS (по маршрутам и статус-кодам);
+- HTTP Latency (p95, по маршрутам);
+- Worker Processed Reviews (скорость обработки по статусам `done`/`failed`);
+- Go Goroutines (количество активных горутин).
+
+Логин и пароль Grafana по умолчанию `admin`/`admin`. Для локального пет-проекта этого достаточно, но для публичного развертывания пароль нужно менять (Grafana попросит это сделать при первом входе).
 
 ## CI/CD
 
@@ -342,6 +365,7 @@ Workflow `.github/workflows/ci.yml` запускается при push в `main`
 - `cmd/bot/main.go` — точка входа бота
 - `internal/config/` — загрузка конфигурации из окружения
 - `internal/logger/` — конструктор JSON-логгера
+- `internal/metrics/` — метрики Prometheus, HTTP-middleware и реестр
 - `internal/httpapi/` — HTTP-маршруты сервиса, хендлеры и DTO
 - `internal/migrate/` — раннер SQL-миграций
 - `internal/storage/` — репозиторий отзывов
@@ -355,6 +379,8 @@ Workflow `.github/workflows/ci.yml` запускается при push в `main`
 - `migrations/` — SQL-миграции и пакет `embed`
 - `testdata/` — демонстрационный CSV с вымышленными отзывами
 - `Dockerfile`, `.dockerignore`, `docker-compose.yml` — сборка и запуск в Docker
+- `prometheus/` — конфигурация скрейпинга для Prometheus
+- `grafana/` — provisioning датасорса и дашбордов Grafana
 - `.github/workflows/ci.yml` — проверки в GitHub Actions
 - `.env.example` — шаблон переменных окружения
 - `.gitattributes` — атрибуты путей для git
@@ -363,4 +389,4 @@ Workflow `.github/workflows/ci.yml` запускается при push в `main`
 
 ## Что не реализовано и почему
 
-Проект в разработке, поэтому пока не реализованы: метрики, Prometheus и Grafana в compose, сборка образов и запуск интеграционных тестов в CI.
+Проект в разработке, поэтому пока не реализованы: сборка Docker-образов и запуск интеграционных тестов в CI.
