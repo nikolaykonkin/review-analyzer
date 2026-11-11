@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/nikolaykonkin/review-analyzer/internal/metrics"
 )
 
 func TestHealthz(t *testing.T) {
@@ -11,7 +13,7 @@ func TestHealthz(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	// Передаем nil, так как для проверки /healthz хранилище и логгер не нужны
-	NewRouter(nil, nil).ServeHTTP(rec, req)
+	NewRouter(nil, metrics.New(), nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("код ответа = %d, ожидалось %d", rec.Code, http.StatusOK)
@@ -25,7 +27,7 @@ func TestHealthz_MethodNotAllowed(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/healthz", nil)
 	rec := httptest.NewRecorder()
 
-	NewRouter(nil, nil).ServeHTTP(rec, req)
+	NewRouter(nil, metrics.New(), nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("код ответа = %d, ожидалось %d", rec.Code, http.StatusMethodNotAllowed)

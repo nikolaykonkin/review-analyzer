@@ -4,10 +4,14 @@ package httpapi
 import (
 	"log/slog"
 	"net/http"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/nikolaykonkin/review-analyzer/internal/metrics"
 )
 
 // NewRouter возвращает маршрутизатор сервиса
-func NewRouter(storage Storage, log *slog.Logger) http.Handler {
+func NewRouter(storage Storage, m *metrics.Metrics, log *slog.Logger) http.Handler {
 	h := NewHandler(storage, log)
 
 	mux := http.NewServeMux()
@@ -17,7 +21,11 @@ func NewRouter(storage Storage, log *slog.Logger) http.Handler {
 	mux.HandleFunc("GET /reviews/random", h.handleGetRandomReview)
 	mux.HandleFunc("GET /stats", h.handleGetStats)
 
-	return mux
+	// Эндпоинт для Prometheus
+	mux.Handle("GET /metrics", promhttp.HandlerFor(m.Registry, promhttp.HandlerOpts{}))
+
+	// Оборачиваем в middleware для сбора метрик
+	return m.Middleware(mux)
 }
 
 func handleHealthz(w http.ResponseWriter, _ *http.Request) {

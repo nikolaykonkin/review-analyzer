@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/nikolaykonkin/review-analyzer/internal/metrics"
 	"github.com/nikolaykonkin/review-analyzer/internal/storage"
 )
 
@@ -39,7 +40,7 @@ func (m *mockStorage) CountByStatus(ctx context.Context) (map[storage.Status]int
 
 func newTestRouter(store Storage) http.Handler {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewRouter(store, log)
+	return NewRouter(store, metrics.New(), log)
 }
 
 func TestGetReview_Success(t *testing.T) {

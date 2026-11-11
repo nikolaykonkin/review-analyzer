@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/nikolaykonkin/review-analyzer/internal/analyzer"
+	"github.com/nikolaykonkin/review-analyzer/internal/metrics"
 	"github.com/nikolaykonkin/review-analyzer/internal/storage"
 )
 
@@ -82,7 +83,7 @@ func TestWorker_ProcessesAndFails(t *testing.T) {
 	an := &mockAnalyzerWithLogic{}
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	w := New(store, an, log)
+	w := New(store, an, metrics.New(), log)
 	w.interval = 10 * time.Millisecond // Ускоряем для теста
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)

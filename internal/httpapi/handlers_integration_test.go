@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/nikolaykonkin/review-analyzer/internal/httpapi"
+	"github.com/nikolaykonkin/review-analyzer/internal/metrics"
 	"github.com/nikolaykonkin/review-analyzer/internal/migrate"
 	"github.com/nikolaykonkin/review-analyzer/internal/storage"
 	"github.com/nikolaykonkin/review-analyzer/internal/testutil"
@@ -55,7 +56,7 @@ func TestGetReview_Integration(t *testing.T) {
 	id2, _, _ := repo.InsertReview(ctx, rev2)
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	router := httpapi.NewRouter(repo, log)
+	router := httpapi.NewRouter(repo, metrics.New(), log)
 
 	// GET /reviews/{id}
 	url := fmt.Sprintf("/reviews/%d", id)

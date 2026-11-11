@@ -10,6 +10,7 @@ import (
 
 	"github.com/nikolaykonkin/review-analyzer/internal/analyzer"
 	"github.com/nikolaykonkin/review-analyzer/internal/gigachat"
+	"github.com/nikolaykonkin/review-analyzer/internal/metrics"
 	"github.com/nikolaykonkin/review-analyzer/internal/storage"
 )
 
@@ -37,6 +38,7 @@ type Analyzer interface {
 type Worker struct {
 	storage     Storage
 	analyzer    Analyzer
+	metrics     *metrics.Metrics
 	log         *slog.Logger
 	batchSize   int
 	concurrency int
@@ -44,10 +46,11 @@ type Worker struct {
 }
 
 // New создает воркер
-func New(storage Storage, analyzer Analyzer, log *slog.Logger) *Worker {
+func New(storage Storage, analyzer Analyzer, m *metrics.Metrics, log *slog.Logger) *Worker {
 	return &Worker{
 		storage:     storage,
 		analyzer:    analyzer,
+		metrics:     m,
 		log:         log,
 		batchSize:   defaultBatchSize,
 		concurrency: defaultConcurrency,
@@ -116,7 +119,12 @@ func (w *Worker) processJob(ctx context.Context, rev storage.Review) {
 	analyzeCtx, cancel := context.WithTimeout(ctx, analyzeTimeout)
 	defer cancel()
 
+	start := time.Now()
 	result, err := w.analyzer.Analyze(analyzeCtx, rev.ReviewText)
+	duration := time.Since(start).Seconds()
+
+	// Записываем метрику длительности запроса к GigaChat
+	w.metrics.GigaChatDuration.Observe(duration)
 
 	// Создаем контекст для обновления статуса в базе
 	// context.WithoutCancel гарантирует, что обновление пройдет,
@@ -126,12 +134,14 @@ func (w *Worker) processJob(ctx context.Context, rev storage.Review) {
 
 	if err != nil {
 		w.log.Error("анализ отзыва", slog.Int64("review_id", rev.ID), slog.Any("error", err))
+		w.metrics.GigaChatProcessedTotal.WithLabelValues("failed").Inc()
 		if err := w.storage.UpdateReviewFailed(dbCtx, rev.ID); err != nil {
 			w.log.Error("обновление статуса failed", slog.Int64("review_id", rev.ID), slog.Any("error", err))
 		}
 		return
 	}
 
+	w.metrics.GigaChatProcessedTotal.WithLabelValues("done").Inc()
 	if err := w.storage.UpdateReviewDone(dbCtx, rev.ID, result); err != nil {
 		w.log.Error("обновление статуса done", slog.Int64("review_id", rev.ID), slog.Any("error", err))
 		return

@@ -19,6 +19,7 @@ import (
 	"github.com/nikolaykonkin/review-analyzer/internal/gigachat"
 	"github.com/nikolaykonkin/review-analyzer/internal/httpapi"
 	"github.com/nikolaykonkin/review-analyzer/internal/logger"
+	"github.com/nikolaykonkin/review-analyzer/internal/metrics"
 	"github.com/nikolaykonkin/review-analyzer/internal/migrate"
 	"github.com/nikolaykonkin/review-analyzer/internal/storage"
 	"github.com/nikolaykonkin/review-analyzer/internal/worker"
@@ -74,6 +75,9 @@ func run() error {
 	}
 	log.Info("миграции применены", slog.Int("applied", applied), slog.Int("total", len(ms)))
 
+	// Инициализация метрик
+	m := metrics.New()
+
 	repo := storage.New(pool)
 
 	// Запускаем фоновый воркер, если настроен GigaChat
@@ -88,7 +92,7 @@ func run() error {
 			return fmt.Errorf("создание клиента gigachat: %w", err)
 		}
 
-		w := worker.New(repo, worker.NewGigaChatAnalyzer(gcClient), log)
+		w := worker.New(repo, worker.NewGigaChatAnalyzer(gcClient), m, log)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -101,7 +105,7 @@ func run() error {
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),
-		Handler:           httpapi.NewRouter(repo, log), // <-- Передаем репозиторий и логгер
+		Handler:           httpapi.NewRouter(repo, m, log),
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
 
