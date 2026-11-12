@@ -110,9 +110,17 @@ func (h *Handler) handleGetStats(w http.ResponseWriter, r *http.Request) {
 
 // writeJSON сериализует v в JSON и пишет в w
 func (h *Handler) writeJSON(w http.ResponseWriter, v any) {
+	// Сначала сериализуем в память
+	// Если json.Marshal вернет ошибку, мы еще можем отдать клиенту корректный статус 500
+	data, err := json.Marshal(v)
+	if err != nil {
+		h.log.Error("сериализация ответа", slog.Any("error", err))
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// Только после успешной сериализации отправляем заголовки
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		h.log.Error("кодирование ответа", slog.Any("error", err))
-	}
+	_, _ = w.Write(data)
 }
